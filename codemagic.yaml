@@ -1,0 +1,60 @@
+workflows:
+  android-workflow:
+    name: Android APK (free — installs directly, no signing needed)
+    max_build_duration: 30
+    instance_type: linux_x2
+    environment:
+      node: 20
+    scripts:
+      - name: Install dependencies
+        script: npm install
+      - name: Add Android platform
+        script: npx cap add android
+      - name: Sync web assets into native project
+        script: npx cap sync android
+      - name: Build debug APK
+        script: |
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+    artifacts:
+      - android/app/build/outputs/apk/debug/*.apk
+
+  ios-workflow:
+    name: iOS unsigned IPA (for sideloading via SideStore/AltStore)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Install dependencies
+        script: npm install
+      - name: Add iOS platform
+        script: npx cap add ios
+      - name: Sync web assets into native project
+        script: npx cap sync ios
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios/App
+          pod install
+      - name: Build unsigned archive
+        script: |
+          cd ios/App
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath "$CM_BUILD_DIR/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+      - name: Package unsigned .ipa
+        script: |
+          mkdir -p "$CM_BUILD_DIR/Payload"
+          cp -r "$CM_BUILD_DIR/App.xcarchive/Products/Applications/App.app" "$CM_BUILD_DIR/Payload/"
+          cd "$CM_BUILD_DIR"
+          zip -r LifeQuest-unsigned.ipa Payload
+    artifacts:
+      - LifeQuest-unsigned.ipa
