@@ -371,7 +371,10 @@
 /* =====================================================================
    REPLACEMENT for the Claude Artifact runtime (window.claude).
    This makes the app's AI / save / export features work outside
-   Claude, using a free Gemini API key via your own Cloudflare Worker.
+   Claude, using a free Groq API key via your own Cloudflare Worker.
+   Groq's API is OpenAI-compatible, so everything below speaks the
+   OpenAI chat-completions shape (messages / tools / tool_calls) —
+   NOT Gemini's functionDeclarations/functionCall shape this used to use.
 
    >>> SET THIS to your deployed Worker's URL before hosting <<<
    ===================================================================== */
@@ -380,39 +383,49 @@
 
   var WORKER_URL = "https://lifequest.ayanrahimsocial.workers.dev"; // <-- your deployed Worker
 
+  // Groq model IDs. Only VISION_MODEL ("complex") can actually see images — the other two are
+  // text-only and will error on an image_url content part, so attachImages() below always routes
+  // image calls to it regardless of which tier the caller asked for.
   var MODEL_MAP = {
-    quick: "gemini-3.1-flash-lite",
-    default: "gemini-3-flash-preview",
-    complex: "gemini-3-flash-preview"
+    quick: "llama-3.1-8b-instant",
+    default: "llama-3.3-70b-versatile",
+    complex: "qwen/qwen3.6-27b"
   };
+  var VISION_MODEL = MODEL_MAP.complex;
 
-  function fileToBase64(file){
+  function fileToDataURL(file){
     return new Promise(function(resolve, reject){
       var reader = new FileReader();
-      reader.onload = function(){ resolve({ data: reader.result.split(",")[1], mimeType: file.type || "image/jpeg" }); };
+      reader.onload = function(){ resolve(reader.result); }; // already a full "data:<mime>;base64,..." URL
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
   }
 
-  function toGeminiContents(promptOrTurns){
+  function toOpenAIMessages(promptOrTurns){
     var turns = (typeof promptOrTurns === "string")
       ? [{ role:"user", content: promptOrTurns }]
       : promptOrTurns;
     return turns.map(function(t){
-      return { role: (t.role === "assistant") ? "model" : "user", parts: [{ text: t.content }] };
+      var role = (t.role === "assistant") ? "assistant" : (t.role === "system" ? "system" : "user");
+      return { role: role, content: t.content };
     });
   }
 
-  function attachImages(contents, images){
-    if(!images) return Promise.resolve(contents);
+  // Groq/OpenAI vision format wants the last user message's `content` turned into an array of
+  // parts — [{type:"text", text:...}, {type:"image_url", image_url:{url:"data:..."}}] — instead
+  // of a plain string.
+  function attachImages(messages, images){
+    if(!images) return Promise.resolve(messages);
     var files = Array.isArray(images) ? images : [images];
-    return Promise.all(files.map(fileToBase64)).then(function(encoded){
-      var last = contents[contents.length-1];
-      encoded.forEach(function(img){
-        last.parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+    return Promise.all(files.map(fileToDataURL)).then(function(dataUrls){
+      var last = messages[messages.length-1];
+      var parts = [{ type:"text", text: (typeof last.content === "string") ? last.content : "" }];
+      dataUrls.forEach(function(url){
+        parts.push({ type:"image_url", image_url:{ url: url } });
       });
-      return contents;
+      last.content = parts;
+      return messages;
     });
   }
 
@@ -425,50 +438,57 @@
     });
   }
 
-  // Converts the app's tool objects ({name, description, inputSchema, execute}) into Gemini's
-  // functionDeclarations shape. Gemini wants a `parameters` object even for a no-arg tool.
-  function toGeminiToolDecls(tools){
+  // Converts the app's tool objects ({name, description, inputSchema, execute}) into OpenAI's
+  // tools shape, which Groq speaks natively: {type:"function", function:{name, description, parameters}}.
+  function toOpenAIToolDecls(tools){
     return tools.map(function(t){
       return {
-        name: t.name,
-        description: t.description || "",
-        parameters: t.inputSchema || { type:"object", properties:{} }
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description || "",
+          parameters: t.inputSchema || { type:"object", properties:{} }
+        }
       };
     });
   }
 
-  // Runs the actual Gemini function-calling round trip: send contents+tools to /generate, and
-  // if the reply contains a functionCall part, run the matching local tool's execute() (the same
-  // function the platform's own sample() would have called), feed its result back as a
-  // functionResponse turn, and ask again — repeating until Gemini replies with plain text instead
-  // of another functionCall. This is the piece the platform runtime does internally; outside
-  // Claude nothing does it for you, so it has to happen here or "add to my calendar" never
-  // actually touches app state no matter how convincingly the model claims it did.
-  function runToolLoop(contents, tools, model, signal, roundsLeft){
+  // Runs the actual tool-calling round trip against Groq's OpenAI-compatible API: send
+  // messages+tools to /generate, and if the reply contains tool_calls, run each matching local
+  // tool's execute() (the same function the platform's own sample() would have called), feed its
+  // result(s) back as "tool" role messages (matched by tool_call_id), and ask again — repeating
+  // until the model replies with plain text instead of more tool_calls. This is the piece the
+  // platform runtime does internally; outside Claude nothing does it for you, so it has to happen
+  // here or "add to my calendar" never actually touches app state no matter how convincingly the
+  // model claims it did.
+  function runToolLoop(messages, tools, model, signal, roundsLeft){
     roundsLeft = roundsLeft == null ? 6 : roundsLeft;
     if(roundsLeft <= 0){ return Promise.reject({ code:"refused", message:"Too many tool calls in a row." }); }
-    var toolDecls = toGeminiToolDecls(tools);
-    return postJSON("/generate", { model: model, contents: contents, tools: toolDecls }, signal).then(function(r){
+    var toolDecls = toOpenAIToolDecls(tools);
+    return postJSON("/generate", { model: model, messages: messages, tools: toolDecls }, signal).then(function(r){
       if(r.status === 429) return Promise.reject({ code:"rate_limited" });
       if(!r.ok) return Promise.reject({ code:"refused" });
       return r.json();
     }).then(function(data){
-      var parts = data.parts || [];
-      var callPart = parts.filter(function(p){ return p && p.functionCall; })[0];
-      if(!callPart){ return { text: data.text || "" }; }
-      var call = callPart.functionCall;
-      var tool = tools.filter(function(t){ return t.name === call.name; })[0];
-      var resultPayload;
-      try{
-        resultPayload = tool ? tool.execute(call.args || {}) : { error: "Unknown tool \"" + call.name + "\"" };
-      }catch(e){
-        resultPayload = { error: (e && e.message) || String(e) };
-      }
-      var nextContents = contents.concat([
-        { role:"model", parts:[{ functionCall: call }] },
-        { role:"function", parts:[{ functionResponse: { name: call.name, response: { result: resultPayload } } }] }
-      ]);
-      return runToolLoop(nextContents, tools, model, signal, roundsLeft - 1);
+      var calls = data.tool_calls || [];
+      if(!calls.length){ return { text: data.text || "" }; }
+      var toolResultMessages = calls.map(function(call){
+        var name = call.function && call.function.name;
+        var args = {};
+        try{ args = JSON.parse((call.function && call.function.arguments) || "{}"); }catch(e){}
+        var tool = tools.filter(function(t){ return t.name === name; })[0];
+        var resultPayload;
+        try{
+          resultPayload = tool ? tool.execute(args) : { error: "Unknown tool \"" + name + "\"" };
+        }catch(e){
+          resultPayload = { error: (e && e.message) || String(e) };
+        }
+        return { role:"tool", tool_call_id: call.id, content: JSON.stringify(resultPayload) };
+      });
+      var nextMessages = messages.concat([
+        { role:"assistant", content: data.text || null, tool_calls: calls }
+      ]).concat(toolResultMessages);
+      return runToolLoop(nextMessages, tools, model, signal, roundsLeft - 1);
     });
   }
 
@@ -477,13 +497,13 @@
   var sampleCapObj = function(turns, opts){
     opts = opts || {};
     var model = MODEL_MAP[opts.modelTier] || MODEL_MAP.default;
-    var contents = toGeminiContents(turns);
+    var messages = toOpenAIMessages(turns);
     // Tool-calling rounds go through the non-streaming /generate endpoint (function calling
     // doesn't fit the SSE text-stream shape /stream is built for) — the UI just shows
     // "Thinking…" until the whole tool-call chain resolves, then the final reply lands in one
     // shot via onText, instead of streaming token-by-token.
     if(opts.tools && opts.tools.length){
-      return runToolLoop(contents, opts.tools, model, opts.signal).then(function(res){
+      return runToolLoop(messages, opts.tools, model, opts.signal).then(function(res){
         if(opts.onText) opts.onText({ text: res.text });
         return { text: res.text, truncated:false };
       }).catch(function(err){
@@ -491,7 +511,7 @@
         throw (err && err.code) ? err : { code:"refused" };
       });
     }
-    return postJSON("/stream", { model: model, contents: contents }, opts.signal).then(function(r){
+    return postJSON("/stream", { model: model, messages: messages }, opts.signal).then(function(r){
       if(r.status === 429) return Promise.reject({ code:"rate_limited" });
       if(!r.ok || !r.body) return Promise.reject({ code:"refused" });
       var reader = r.body.getReader();
@@ -514,10 +534,13 @@
 
   sampleCapObj.json = function(promptOrTurns, opts){
     opts = opts || {};
-    var model = MODEL_MAP[opts.modelTier] || MODEL_MAP.default;
-    var contents = toGeminiContents(promptOrTurns);
-    return attachImages(contents, opts.images).then(function(contents){
-      return postJSON("/generate", { model: model, contents: contents, json: true }, opts.signal);
+    // A photo forces the vision-capable model regardless of the requested tier — Groq's
+    // non-vision models reject image_url content parts outright, so honoring a "quick"/"default"
+    // request here would turn every food-photo scan into a hard error instead of an answer.
+    var model = opts.images ? VISION_MODEL : (MODEL_MAP[opts.modelTier] || MODEL_MAP.default);
+    var messages = toOpenAIMessages(promptOrTurns);
+    return attachImages(messages, opts.images).then(function(messages){
+      return postJSON("/generate", { model: model, messages: messages, json: true }, opts.signal);
     }).then(function(r){
       if(r.status === 429) return Promise.reject({ code:"rate_limited" });
       if(!r.ok) return Promise.reject({ code:"refused" });
