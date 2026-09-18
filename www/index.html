@@ -1,6 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="icon" href="icon-512.png" sizes="512x512" type="image/png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="LifeQuest"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#14141c"></head><body>
-<title>LifeQuest</title>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="icon" href="icon-512.png" sizes="512x512" type="image/png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="LifeQuest"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#14141c"><title>LifeQuest</title></head><body>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700;900&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -380,7 +378,7 @@
 (function(){
   "use strict";
 
-  var WORKER_URL = "https://lifequest.ayanrahimsocial.workers.dev";
+  var WORKER_URL = "https://lifequest.ayanrahimsocial.workers.dev"; // <-- your deployed Worker
 
   var MODEL_MAP = {
     quick: "gemini-3.1-flash-lite",
@@ -427,16 +425,72 @@
     });
   }
 
+  // Converts the app's tool objects ({name, description, inputSchema, execute}) into Gemini's
+  // functionDeclarations shape. Gemini wants a `parameters` object even for a no-arg tool.
+  function toGeminiToolDecls(tools){
+    return tools.map(function(t){
+      return {
+        name: t.name,
+        description: t.description || "",
+        parameters: t.inputSchema || { type:"object", properties:{} }
+      };
+    });
+  }
+
+  // Runs the actual Gemini function-calling round trip: send contents+tools to /generate, and
+  // if the reply contains a functionCall part, run the matching local tool's execute() (the same
+  // function the platform's own sample() would have called), feed its result back as a
+  // functionResponse turn, and ask again — repeating until Gemini replies with plain text instead
+  // of another functionCall. This is the piece the platform runtime does internally; outside
+  // Claude nothing does it for you, so it has to happen here or "add to my calendar" never
+  // actually touches app state no matter how convincingly the model claims it did.
+  function runToolLoop(contents, tools, model, signal, roundsLeft){
+    roundsLeft = roundsLeft == null ? 6 : roundsLeft;
+    if(roundsLeft <= 0){ return Promise.reject({ code:"refused", message:"Too many tool calls in a row." }); }
+    var toolDecls = toGeminiToolDecls(tools);
+    return postJSON("/generate", { model: model, contents: contents, tools: toolDecls }, signal).then(function(r){
+      if(r.status === 429) return Promise.reject({ code:"rate_limited" });
+      if(!r.ok) return Promise.reject({ code:"refused" });
+      return r.json();
+    }).then(function(data){
+      var parts = data.parts || [];
+      var callPart = parts.filter(function(p){ return p && p.functionCall; })[0];
+      if(!callPart){ return { text: data.text || "" }; }
+      var call = callPart.functionCall;
+      var tool = tools.filter(function(t){ return t.name === call.name; })[0];
+      var resultPayload;
+      try{
+        resultPayload = tool ? tool.execute(call.args || {}) : { error: "Unknown tool \"" + call.name + "\"" };
+      }catch(e){
+        resultPayload = { error: (e && e.message) || String(e) };
+      }
+      var nextContents = contents.concat([
+        { role:"model", parts:[{ functionCall: call }] },
+        { role:"function", parts:[{ functionResponse: { name: call.name, response: { result: resultPayload } } }] }
+      ]);
+      return runToolLoop(nextContents, tools, model, signal, roundsLeft - 1);
+    });
+  }
+
   // The "sample" capability is both callable directly (streaming chat) and
   // has a .json() method (single/multi-turn calls that expect JSON back).
   var sampleCapObj = function(turns, opts){
     opts = opts || {};
-    // The app already falls back to a plain chat call whenever it sees
-    // "tools_unavailable", so we don't need to implement Gemini's function
-    // calling — just decline tool use and let the app's own fallback run.
-    if(opts.tools && opts.tools.length){ return Promise.reject({ code:"tools_unavailable" }); }
     var model = MODEL_MAP[opts.modelTier] || MODEL_MAP.default;
     var contents = toGeminiContents(turns);
+    // Tool-calling rounds go through the non-streaming /generate endpoint (function calling
+    // doesn't fit the SSE text-stream shape /stream is built for) — the UI just shows
+    // "Thinking…" until the whole tool-call chain resolves, then the final reply lands in one
+    // shot via onText, instead of streaming token-by-token.
+    if(opts.tools && opts.tools.length){
+      return runToolLoop(contents, opts.tools, model, opts.signal).then(function(res){
+        if(opts.onText) opts.onText({ text: res.text });
+        return { text: res.text, truncated:false };
+      }).catch(function(err){
+        if(err && err.name === "AbortError") throw { code:"cancelled" };
+        throw (err && err.code) ? err : { code:"refused" };
+      });
+    }
     return postJSON("/stream", { model: model, contents: contents }, opts.signal).then(function(r){
       if(r.status === 429) return Promise.reject({ code:"rate_limited" });
       if(!r.ok || !r.body) return Promise.reject({ code:"refused" });
@@ -477,7 +531,12 @@
   sampleCapObj.limits = function(){
     return Promise.resolve({
       images: { mediaTypes: ["image/jpeg","image/png","image/webp"], maxInputBytes: 4*1024*1024 },
-      tools: { maxCount: 0 }
+      // Real function-calling is implemented above (runToolLoop) — this used to report 0 and
+      // relied on a JS truthiness quirk (`if(maxCount)` is false for 0, so the app's own slice
+      // never actually ran) to silently pass every tool through anyway, straight into the
+      // unconditional rejection that used to sit in sampleCapObj. Reporting a real number here
+      // is the honest version of the same effect, now that the rejection is gone.
+      tools: { maxCount: 20 }
     });
   };
 
@@ -896,7 +955,12 @@
   // (distinct from the org restriction, which blocks the page from loading at all).
   var state = null;
   var docRef = null;
-  var localOnly = false;
+  // On the real Claude platform this flips to false once a synced db doc loads, so the header
+  // badge can honestly say "Save synced". In this standalone build the "db" capability (see the
+  // window.claude shim above) is just a localStorage wrapper — nothing ever leaves this device —
+  // so it stays true always, and the badge always reads "Local save only" instead of implying a
+  // backup exists somewhere it doesn't.
+  var localOnly = true;
   var writeChain = Promise.resolve();
   var LOCAL_KEY = "lifequest_state_v1";
 
@@ -4328,5 +4392,4 @@
 })();
 </script>
 
-</body></html>
 </body></html>
