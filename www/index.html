@@ -411,14 +411,16 @@
   // text-only and will error on an image_url content part, so attachImages() below always routes
   // image calls to it regardless of which tier the caller asked for.
   //
-  // Groq retires free-tier models with little notice (llama-3.1-8b-instant and
-  // llama-3.3-70b-versatile were both deprecated 2026-08-16, a month after these were first
-  // picked) — if AI features start failing again with "model_not_found"/404 in the Worker's
-  // logs, check https://console.groq.com/docs/models and /docs/deprecations for current IDs.
+  // Groq retires models with little notice, and their own docs pages have proven to lag behind
+  // what's actually live (qwen/qwen3.6-27b returned model_not_found while /docs/vision still
+  // listed it as active) — so /docs/models and /docs/deprecations are a starting point, not
+  // proof. If AI features fail again with "model_not_found"/404 in the Worker's logs, the
+  // reliable check is console.groq.com → Playground → the model picker dropdown, which reflects
+  // what your account can actually call right now.
   var MODEL_MAP = {
     quick: "openai/gpt-oss-20b",
     default: "openai/gpt-oss-120b",
-    complex: "qwen/qwen3.6-27b"
+    complex: "qwen/qwen3.8-27b"
   };
   var VISION_MODEL = MODEL_MAP.complex;
 
