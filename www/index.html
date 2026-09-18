@@ -63,6 +63,11 @@
     box-shadow:0 0 0 3px rgba(217,180,92,.08), inset 0 0 10px rgba(0,0,0,.5);
     font-family:var(--font-display);font-weight:900;font-size:16px;letter-spacing:.02em;color:var(--gold);
   }
+  .logo-mark{
+    width:44px;height:44px;flex:none;border-radius:10px;overflow:hidden;
+    border:1px solid var(--gold-dim);box-shadow:0 0 0 3px rgba(217,180,92,.08);
+  }
+  .logo-mark img{width:100%;height:100%;display:block;object-fit:cover;}
   .wordmark h1{font-size:clamp(22px,5vw,28px);letter-spacing:.04em;color:var(--gold);}
   .wordmark .tag{font-size:11px;color:var(--parchment-dim);letter-spacing:.08em;text-transform:uppercase;}
 
@@ -653,12 +658,15 @@
   /* ===================== CONFIG ===================== */
   // Bump this on every real update you ship — shown at the bottom of Settings so you can tell
   // at a glance which build is actually installed on a device.
-  var APP_VERSION = "1.0.0";
+  var APP_VERSION = "1.0.1";
   // The splash screen (the static markup in <div id="app"> at the top of the page) should read
   // as a deliberate beat, not a flash — so the very first render is held back until at least this
   // much time has passed since boot started, even if the save actually loaded faster than that.
   var BOOT_STARTED_AT = Date.now();
   var SPLASH_MIN_MS = 1400;
+  // Base64-embedded PNG of the app icon (no network fetch, no bundler asset step —
+  // this is a plain single-file app) used for the in-app header mark.
+  var LOGO_DATA_URI = "data:image/png;base64,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";
   // Calibrated for a multi-year arc: ~40 XP/day/stat from consistent daily use (a handful of
   // quests, meals logged, water, an occasional workout) puts level 10 around 2 months in (a real
   // milestone, not trivial) and level 98 around year 7 — the last stretch to 100 then costs
@@ -976,7 +984,10 @@
   };
 
   function defaultSettings(){
-    return { calorieTarget:2200, proteinTarget:150, carbsTarget:220, fatTarget:70, waterGoal:8 };
+    // Notifications are opt-in — both default false so a fresh install (and every existing save
+    // hydrated through here, which never had these keys) never schedules anything the person
+    // didn't ask for.
+    return { calorieTarget:2200, proteinTarget:150, carbsTarget:220, fatTarget:70, waterGoal:8, notifCalendar:false, notifMeals:false };
   }
   function freshNutritionDay(){
     return { date:todayStr(), calories:0, protein:0, carbs:0, fat:0, waterCount:0 };
@@ -2073,25 +2084,126 @@
     });
   }
 
+  /* ----- Notifications (native, via @capacitor/local-notifications) -----
+     Everything here is opt-in (state.settings.notifCalendar / notifMeals, both default false —
+     see defaultSettings()) and degrades to a silent no-op wherever the plugin isn't present, so
+     this file keeps working unmodified in a plain browser preview, not just the packaged app.
+     The native plugin must be added to the app's package.json (and synced with `npx cap sync`)
+     for these calls to do anything on-device — see the note left for the build step. */
+  var MEAL_NOTIF_IDS = { breakfast: 91001, lunch: 91002, dinner: 91003 };
+  function notifPlugin(){
+    try{ return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null; }
+    catch(e){ return null; }
+  }
+  // Local notifications need an integer id per notification. Calendar events have string ids
+  // ("cal_xxxxxxxx"), so this hashes one down to a stable positive int that never collides with
+  // the three fixed meal ids above.
+  function eventNotifId(eventId){
+    var h = 0;
+    String(eventId||"").split("").forEach(function(ch){ h = (h*31 + ch.charCodeAt(0)) | 0; });
+    return 100000 + (Math.abs(h) % 900000000);
+  }
+  function ensureNotifPermission(){
+    var plugin = notifPlugin();
+    if(!plugin) return Promise.resolve(false);
+    return plugin.checkPermissions().then(function(res){
+      if(res && res.display === "granted") return true;
+      return plugin.requestPermissions().then(function(res2){ return !!(res2 && res2.display === "granted"); });
+    }).catch(function(){ return false; });
+  }
+  function scheduleMealNotifications(){
+    var plugin = notifPlugin();
+    if(!plugin) return;
+    ensureNotifPermission().then(function(granted){
+      if(!granted) return;
+      plugin.schedule({ notifications: [
+        { id: MEAL_NOTIF_IDS.breakfast, title:"Breakfast", body:"Time to log breakfast in LifeQuest.", schedule:{ on:{hour:9,minute:0}, repeats:true, allowWhileIdle:true } },
+        { id: MEAL_NOTIF_IDS.lunch, title:"Lunch", body:"Time to log lunch in LifeQuest.", schedule:{ on:{hour:15,minute:0}, repeats:true, allowWhileIdle:true } },
+        { id: MEAL_NOTIF_IDS.dinner, title:"Dinner", body:"Time to log dinner in LifeQuest.", schedule:{ on:{hour:20,minute:0}, repeats:true, allowWhileIdle:true } }
+      ]}).catch(function(){});
+    });
+  }
+  function cancelMealNotifications(){
+    var plugin = notifPlugin();
+    if(!plugin) return;
+    plugin.cancel({ notifications:[{id:MEAL_NOTIF_IDS.breakfast},{id:MEAL_NOTIF_IDS.lunch},{id:MEAL_NOTIF_IDS.dinner}] }).catch(function(){});
+  }
+  function applyMealNotifSetting(){
+    if(state.settings.notifMeals) scheduleMealNotifications(); else cancelMealNotifications();
+  }
+  function eventReminderDate(ev){
+    if(!ev || !ev.date) return null;
+    var timeStr = ev.time && /^\d{1,2}:\d{2}$/.test(ev.time) ? ev.time : "09:00";
+    var dt = new Date(ev.date + "T" + timeStr + ":00");
+    if(isNaN(dt.getTime())) return null;
+    dt.setMinutes(dt.getMinutes() - 30);
+    return dt;
+  }
+  function scheduleEventReminder(ev){
+    var plugin = notifPlugin();
+    if(!plugin || !state.settings.notifCalendar || !ev || ev.done) return;
+    var when = eventReminderDate(ev);
+    if(!when || when.getTime() <= Date.now()) return; // don't schedule a reminder already in the past
+    ensureNotifPermission().then(function(granted){
+      if(!granted) return;
+      plugin.schedule({ notifications:[{
+        id: eventNotifId(ev.id), title: (ev.category==="event" ? "Upcoming event" : "Upcoming task"),
+        body: ev.title + " — in 30 minutes", schedule:{ at: when }
+      }]}).catch(function(){});
+    });
+  }
+  function cancelEventReminder(ev){
+    var plugin = notifPlugin();
+    if(!plugin || !ev) return;
+    plugin.cancel({ notifications:[{id: eventNotifId(ev.id)}] }).catch(function(){});
+  }
+  function rescheduleAllEventReminders(){
+    if(!notifPlugin()) return;
+    // Clear every reminder this app could have scheduled, then — if still opted in — lay down
+    // fresh ones for every future, not-yet-done event. Simplest correct way to keep native
+    // notifications in sync with the calendar without tracking which ids are currently live.
+    state.calendar.events.forEach(function(ev){ cancelEventReminder(ev); });
+    if(!state.settings.notifCalendar) return;
+    state.calendar.events.forEach(function(ev){ scheduleEventReminder(ev); });
+  }
+  function setNotifSetting(key, value){
+    state.settings[key] = !!value;
+    render(); persist();
+    if(key === "notifMeals") applyMealNotifSetting();
+    if(key === "notifCalendar") rescheduleAllEventReminders();
+  }
+  function syncNotificationsOnBoot(){
+    // Re-applies whatever's already opted into — covers an app update that ships this feature
+    // onto an existing save, and a device reboot that can clear the OS's pending local
+    // notifications out from under an app that never re-registers them.
+    if(state.settings.notifMeals) scheduleMealNotifications();
+    if(state.settings.notifCalendar) rescheduleAllEventReminders();
+  }
+
   /* ----- Calendar ----- */
   function addCalendarEvent(title, date, time, category, notes){
     title = (title||"").trim();
     if(!title || !date) return;
     category = category==="event" ? "event" : "task";
-    state.calendar.events.push({
+    var ev = {
       id:"cal_"+uid().slice(0,8), title:title.slice(0,80), date:date, time:(time||"").slice(0,10),
       category:category, done:false, notes:(notes||"").trim().slice(0,200)
-    });
+    };
+    state.calendar.events.push(ev);
     render(); persist();
+    scheduleEventReminder(ev);
   }
   function deleteCalendarEvent(id){
+    var ev = state.calendar.events.filter(function(e){ return e.id===id; })[0];
     state.calendar.events = state.calendar.events.filter(function(e){ return e.id!==id; });
     render(); persist();
+    if(ev) cancelEventReminder(ev);
   }
   function completeCalendarEvent(id){
     var ev = state.calendar.events.filter(function(e){ return e.id===id; })[0];
     if(!ev || ev.done) return;
     ev.done = true;
+    cancelEventReminder(ev);
     var rewards = {}; var events = [];
     var prod = statById("productivity");
     if(prod){ rewards.productivity = 20; addXp(prod, 20, ev.title).forEach(function(e){ events.push({stat:prod, level:e.level, newTitle:e.newTitle}); }); }
@@ -2800,6 +2912,40 @@
     render(); persist();
   }
 
+  var importArmed = false;
+  function beginImport(){
+    if(!importArmed){
+      importArmed = true;
+      render();
+      setTimeout(function(){ importArmed=false; render(); }, 4000);
+      return;
+    }
+    importArmed = false;
+    render();
+    var input = document.getElementById("importFileInput");
+    if(input) input.click();
+  }
+  function handleImportFile(file){
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      var parsed;
+      try{ parsed = JSON.parse(reader.result); }
+      catch(e){ showToast("⚠️","Import failed","That file isn't valid JSON."); return; }
+      if(!parsed || typeof parsed !== "object" || (!parsed.stats && !parsed.profile)){
+        showToast("⚠️","Import failed","That doesn't look like a LifeQuest backup file.");
+        return;
+      }
+      state = hydrate(parsed);
+      checkDailyConsistency();
+      syncNotificationsOnBoot();
+      render(); persist();
+      showToast("💾","Backup imported","Your save was restored from the file.");
+    };
+    reader.onerror = function(){ showToast("⚠️","Import failed","Could not read that file."); };
+    reader.readAsText(file);
+  }
+
   var resetArmed = false;
   function resetProgress(){
     if(!resetArmed){
@@ -2922,8 +3068,8 @@
     return ''
     + '<div class="wordmark">'
     +   '<div class="wordmark-left">'
-    +     '<div class="logo-badge">LQ</div>'
-    +     '<div><h1>LifeQuest</h1><div class="tag">Your life, leveled up</div></div>'
+    +     '<div class="logo-mark"><img src="'+LOGO_DATA_URI+'" alt="LifeQuest"></div>'
+    +     '<div class="tag">Your life, leveled up</div>'
     +   '</div>'
     + '</div>'
     + '<div class="panel status-plate">'
@@ -3525,6 +3671,12 @@
     + '<div class="panel">'
     +   '<div class="onboard-head"><div class="wordmark-left" style="margin-bottom:10px"><div class="logo-badge">LQ</div><h1>Welcome to LifeQuest</h1></div><div class="tag">Set up your character before the first quest — this builds your personalized macro plan.</div></div>'
     +   renderProfileFields(p)
+    +   '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--gold-dim)">'
+    +     '<div class="section-h" style="margin-bottom:6px">Notifications (optional)</div>'
+    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> Meal reminders — 9:00 AM, 3:00 PM, 8:00 PM</label>'
+    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> Remind me 30 minutes before calendar events</label>'
+    +     '<div class="muted" style="margin-top:6px;font-size:11px">Off by default — turn on now or anytime later in Settings → Notifications.</div>'
+    +   '</div>'
     +   '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">'
     +     '<button class="btn-primary" id="onboardSaveBtn">Start My Journey</button>'
     +     '<button class="btn-secondary" id="onboardSkipBtn">Skip for now</button>'
@@ -3805,11 +3957,21 @@
     +   '<button class="btn-secondary" id="saveTargetsBtn" style="margin-top:12px">Save Targets</button>'
     + '</div>'
     + '<div class="panel">'
+    +   '<div class="section-h">Notifications</div>'
+    +   '<div class="muted" style="margin-bottom:10px">All off by default — nothing is scheduled unless you turn it on here.</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> <span>Meal reminders — 9:00 AM Breakfast, 3:00 PM Lunch, 8:00 PM Dinner</span></label>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> <span>Remind me 30 minutes before each calendar event</span></label>'
+    +   '<div class="muted" style="margin-top:10px;font-size:11px">Your device will ask to allow notifications the first time one of these is turned on.</div>'
+    + '</div>'
+    + '<div class="panel">'
     +   '<div class="section-h">Data</div>'
     +   '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">'
     +     '<button class="btn-secondary" id="exportBtn">⇩ Export save as JSON</button>'
+    +     '<button class="'+(importArmed?'btn-primary':'btn-secondary')+'" id="importBtn">'+(importArmed?"Click again to choose a backup file":"⇧ Import backup from JSON")+'</button>'
     +     '<button class="'+(resetArmed?'btn-danger':'btn-secondary')+'" id="resetBtn">'+(resetArmed?"Click again to confirm reset":"Reset all progress")+'</button>'
+    +     '<input type="file" id="importFileInput" accept="application/json,.json" style="display:none">'
     +   '</div>'
+    +   (importArmed ? '<div class="muted" style="margin-top:8px">This will replace all current progress with whatever is in the file you pick. This cannot be undone.</div>' : '')
     +   (resetArmed ? '<div class="muted" style="margin-top:8px;color:var(--danger)">This will erase every stat, quest and log entry. This cannot be undone.</div>' : '')
     + '</div>'
     + '<div class="panel">'
@@ -4306,8 +4468,23 @@
     var exportBtn = document.getElementById("exportBtn");
     if(exportBtn) exportBtn.addEventListener("click", function(){ doExport(); });
 
+    var importBtn = document.getElementById("importBtn");
+    if(importBtn) importBtn.addEventListener("click", function(){ beginImport(); });
+    var importFileInput = document.getElementById("importFileInput");
+    if(importFileInput) importFileInput.addEventListener("change", function(e){
+      var file = e.target.files && e.target.files[0];
+      handleImportFile(file);
+      e.target.value = ""; // so picking the same filename again still fires a change event
+    });
+
     var resetBtn = document.getElementById("resetBtn");
     if(resetBtn) resetBtn.addEventListener("click", function(){ resetProgress(); });
+
+    // Notification opt-in toggles — rendered both in onboarding (near the weight/height fields)
+    // and in Settings → Notifications, wired the same way wherever they show up.
+    Array.prototype.forEach.call(document.querySelectorAll("[data-notif-key]"), function(el){
+      el.addEventListener("change", function(){ setNotifSetting(el.getAttribute("data-notif-key"), el.checked); });
+    });
   }
 
   /* ===================== EXPORT ===================== */
@@ -4340,6 +4517,7 @@
     }
     state = hydrate(safeState);
     checkDailyConsistency();
+    syncNotificationsOnBoot();
     var elapsed = Date.now() - BOOT_STARTED_AT;
     var wait = Math.max(0, SPLASH_MIN_MS - elapsed);
     setTimeout(render, wait);
