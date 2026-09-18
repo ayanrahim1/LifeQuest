@@ -10,6 +10,8 @@ workflows:
         script: npm install
       - name: Add Android platform
         script: npx cap add android
+      - name: Generate app icon from resources/icon.png
+        script: npx --yes @capacitor/assets generate --android
       - name: Sync web assets into native project
         script: npx cap sync android
       - name: Build debug APK
@@ -33,6 +35,8 @@ workflows:
         script: npm install
       - name: Add iOS platform
         script: npx cap add ios
+      - name: Generate app icon from resources/icon.png
+        script: npx --yes @capacitor/assets generate --ios
       - name: Sync web assets into native project
         script: npx cap sync ios
       - name: Install CocoaPods dependencies
