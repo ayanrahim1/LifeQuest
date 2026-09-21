@@ -589,8 +589,10 @@
       // relied on a JS truthiness quirk (`if(maxCount)` is false for 0, so the app's own slice
       // never actually ran) to silently pass every tool through anyway, straight into the
       // unconditional rejection that used to sit in sampleCapObj. Reporting a real number here
-      // is the honest version of the same effect, now that the rejection is gone.
-      tools: { maxCount: 20 }
+      // is the honest version of the same effect, now that the rejection is gone. Bumped past 20
+      // once ADMIN_TOOLS grew past that with the personalization tools — this cap just needs to
+      // stay ahead of ADMIN_TOOLS.length, not model a real platform limit.
+      tools: { maxCount: 48 }
     });
   };
 
@@ -653,7 +655,7 @@
   /* ===================== CONFIG ===================== */
   // Bump this on every real update you ship — shown at the bottom of Settings so you can tell
   // at a glance which build is actually installed on a device.
-  var APP_VERSION = "1.0.1";
+  var APP_VERSION = "1.1.0";
   // The splash screen (the static markup in <div id="app"> at the top of the page) should read
   // as a deliberate beat, not a flash — so the very first render is held back until at least this
   // much time has passed since boot started, even if the save actually loaded faster than that.
@@ -679,6 +681,26 @@
   var GRADE_GROUPS = ["f","e","d","c","b","a","s","ss","sss"];
   var TITLES = ["Novice","Initiate","Apprentice","Adept","Journeyman","Specialist","Expert","Veteran","Elite","Master","Grandmaster","Champion","Hero","Paragon","Legend","Mythic","Ascendant","Transcendent","Immortal","Sovereign"];
   var STAT_PALETTE = ["#e2643b","#6fae62","#9b7fd4","#52b8c4","#d99a4e","#6a86c9","#d1495b","#4fb88f","#c77dbb","#7d97d4"];
+
+  // ---- Per-user customization: every user's own copy of the app can be reshaped through the
+  // in-app AI chat (or the quick controls in Settings) without touching a single line of code —
+  // it's all just state.settings values, isolated to that person's local save. ----
+  // Curated accent palettes — kept curated (rather than free-form hex only) so a user can just say
+  // "make it emerald" and get something that's already readable against the dark ink background;
+  // accent_hex on the set_theme tool is still open for anyone who wants an exact color.
+  var THEME_PRESETS = {
+    gold:     { accent:"#d9b45c", accentDim:"#a6873f" }, // the app's original default
+    emerald:  { accent:"#5cd9a0", accentDim:"#3aa176" },
+    sapphire: { accent:"#5c9ad9", accentDim:"#3a72a1" },
+    crimson:  { accent:"#d95c6e", accentDim:"#a13a49" },
+    amethyst: { accent:"#a95cd9", accentDim:"#7d3aa1" },
+    silver:   { accent:"#c7cbd6", accentDim:"#8f94a3" },
+    sunset:   { accent:"#e0923c", accentDim:"#ad6a24" }
+  };
+  // Lets the whole leveling curve run faster/slower per user without touching the shared formula —
+  // xpToNext() is the single call site every progress bar and level-up check already goes through.
+  var XP_PACE_MULT = { casual:0.6, normal:1, grindy:1.6 };
+  var XP_PACE_LABELS = { casual:"Casual — level up faster", normal:"Normal (default)", grindy:"Grindy — slower, longer climb" };
 
   var ACTIVITY_MULTIPLIERS = { sedentary:1.2, light:1.375, moderate:1.55, very:1.725, extra:1.9 };
   var ACTIVITY_LABELS = {
@@ -797,12 +819,24 @@
     }
   ];
 
-  function xpToNext(level){ if(level>=MAX_LEVEL) return Infinity; return Math.floor(BASE_XP*Math.pow(GROWTH, level-1)); }
+  function xpToNext(level){
+    if(level>=MAX_LEVEL) return Infinity;
+    // state may not exist yet the very first time this is referenced (module load, before boot) —
+    // fall back to the normal pace rather than throwing.
+    var mult = (typeof state!=="undefined" && state && state.settings && XP_PACE_MULT[state.settings.xpPace]) || 1;
+    return Math.max(1, Math.floor(BASE_XP*Math.pow(GROWTH, level-1) * mult));
+  }
   function gradeIndex(level){ var l=Math.max(1,Math.min(MAX_LEVEL,level)); return Math.min(26, Math.floor((l-1)*27/100)); }
   function gradeLabel(level){ return GRADES[gradeIndex(level)]; }
   function gradeGroup(level){ return GRADE_GROUPS[Math.floor(gradeIndex(level)/3)]; }
   function titleIndex(level){ var l=Math.max(1,Math.min(MAX_LEVEL,level)); return Math.min(19, Math.floor((l-1)/5)); }
-  function titleLabel(level){ return TITLES[titleIndex(level)]; }
+  // A user's custom rank titles (via set_rank_titles) override the defaults 1:1 by index; falls
+  // back to TITLES whenever settings.rankTitles isn't a full, valid 20-entry override.
+  function currentTitles(){
+    var custom = state && state.settings && state.settings.rankTitles;
+    return (Array.isArray(custom) && custom.length===TITLES.length) ? custom : TITLES;
+  }
+  function titleLabel(level){ return currentTitles()[titleIndex(level)]; }
 
   function pad2(n){ return (n<10?"0":"")+n; }
   function todayStr(d){ d=d||new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
@@ -979,7 +1013,24 @@
     // Notifications are opt-in — both default false so a fresh install (and every existing save
     // hydrated through here, which never had these keys) never schedules anything the person
     // didn't ask for.
-    return { calorieTarget:2200, proteinTarget:150, carbsTarget:220, fatTarget:70, waterGoal:8, notifCalendar:false, notifMeals:false };
+    // Everything below "notifMeals" is per-user customization (theme, coach tone, rank titles,
+    // XP pacing, notification schedule/wording) — all defaults match the app's original,
+    // unmodified look and feel, so hydrating an existing save through here changes nothing until
+    // the person actually asks the AI (or Settings → Customize) to change it.
+    return {
+      calorieTarget:2200, proteinTarget:150, carbsTarget:220, fatTarget:70, waterGoal:8,
+      notifCalendar:false, notifMeals:false,
+      theme: { name:"gold", accent:THEME_PRESETS.gold.accent, accentDim:THEME_PRESETS.gold.accentDim },
+      coachTone: "",
+      xpPace: "normal",
+      rankTitles: null,
+      mealTimes: { breakfast:"09:00", lunch:"15:00", dinner:"20:00" },
+      eventReminderMinutes: 30,
+      notifWording: {
+        breakfast:"Time to log breakfast in LifeQuest.", lunch:"Time to log lunch in LifeQuest.",
+        dinner:"Time to log dinner in LifeQuest.", eventReminder:"{title} — in {minutes} minutes"
+      }
+    };
   }
   function freshNutritionDay(){
     return { date:todayStr(), calories:0, protein:0, carbs:0, fat:0, waterCount:0 };
@@ -2076,6 +2127,27 @@
     });
   }
 
+  /* ----- Appearance / theming -----
+     The entire gold accent scheme (borders, headings, the level orb, everything) is driven by
+     just two CSS custom properties — var(--gold) and var(--gold-dim) — so recoloring the whole
+     app for one user is a two-line runtime style override, no per-component CSS to touch. */
+  function shadeHex(hex, amt){
+    hex = String(hex||"").replace("#","");
+    if(!/^[0-9a-fA-F]{6}$/.test(hex)) return "#a6873f";
+    var num = parseInt(hex,16);
+    var r = (num>>16)&255, g=(num>>8)&255, b=num&255;
+    r = Math.max(0, Math.min(255, Math.round(r*(1+amt))));
+    g = Math.max(0, Math.min(255, Math.round(g*(1+amt))));
+    b = Math.max(0, Math.min(255, Math.round(b*(1+amt))));
+    return "#" + [r,g,b].map(function(v){ return (v<16?"0":"")+v.toString(16); }).join("");
+  }
+  function applyTheme(){
+    var theme = (state && state.settings && state.settings.theme) || THEME_PRESETS.gold;
+    var root = document.documentElement;
+    root.style.setProperty("--gold", theme.accent || THEME_PRESETS.gold.accent);
+    root.style.setProperty("--gold-dim", theme.accentDim || THEME_PRESETS.gold.accentDim);
+  }
+
   /* ----- Notifications (native, via @capacitor/local-notifications) -----
      Everything here is opt-in (state.settings.notifCalendar / notifMeals, both default false —
      see defaultSettings()) and degrades to a silent no-op wherever the plugin isn't present, so
@@ -2103,15 +2175,25 @@
       return plugin.requestPermissions().then(function(res2){ return !!(res2 && res2.display === "granted"); });
     }).catch(function(){ return false; });
   }
+  // Parses "HH:MM" into a clamped {h,m}, falling back to the given default on anything malformed
+  // — used so a bad/partial value from a chat tool call can never schedule a broken notification.
+  function parseHM(str, fallbackH, fallbackM){
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(str||""));
+    if(!m) return { h:fallbackH, m:fallbackM };
+    return { h: Math.max(0, Math.min(23, parseInt(m[1],10))), m: Math.max(0, Math.min(59, parseInt(m[2],10))) };
+  }
   function scheduleMealNotifications(){
     var plugin = notifPlugin();
     if(!plugin) return;
+    var times = (state.settings.mealTimes) || {};
+    var words = (state.settings.notifWording) || {};
+    var b = parseHM(times.breakfast, 9, 0), l = parseHM(times.lunch, 15, 0), d = parseHM(times.dinner, 20, 0);
     ensureNotifPermission().then(function(granted){
       if(!granted) return;
       plugin.schedule({ notifications: [
-        { id: MEAL_NOTIF_IDS.breakfast, title:"Breakfast", body:"Time to log breakfast in LifeQuest.", schedule:{ on:{hour:9,minute:0}, repeats:true, allowWhileIdle:true } },
-        { id: MEAL_NOTIF_IDS.lunch, title:"Lunch", body:"Time to log lunch in LifeQuest.", schedule:{ on:{hour:15,minute:0}, repeats:true, allowWhileIdle:true } },
-        { id: MEAL_NOTIF_IDS.dinner, title:"Dinner", body:"Time to log dinner in LifeQuest.", schedule:{ on:{hour:20,minute:0}, repeats:true, allowWhileIdle:true } }
+        { id: MEAL_NOTIF_IDS.breakfast, title:"Breakfast", body: words.breakfast || "Time to log breakfast in LifeQuest.", schedule:{ on:{hour:b.h,minute:b.m}, repeats:true, allowWhileIdle:true } },
+        { id: MEAL_NOTIF_IDS.lunch, title:"Lunch", body: words.lunch || "Time to log lunch in LifeQuest.", schedule:{ on:{hour:l.h,minute:l.m}, repeats:true, allowWhileIdle:true } },
+        { id: MEAL_NOTIF_IDS.dinner, title:"Dinner", body: words.dinner || "Time to log dinner in LifeQuest.", schedule:{ on:{hour:d.h,minute:d.m}, repeats:true, allowWhileIdle:true } }
       ]}).catch(function(){});
     });
   }
@@ -2128,7 +2210,8 @@
     var timeStr = ev.time && /^\d{1,2}:\d{2}$/.test(ev.time) ? ev.time : "09:00";
     var dt = new Date(ev.date + "T" + timeStr + ":00");
     if(isNaN(dt.getTime())) return null;
-    dt.setMinutes(dt.getMinutes() - 30);
+    var lead = clamp(Math.round(Number(state.settings.eventReminderMinutes)) || 30, 1, 1440);
+    dt.setMinutes(dt.getMinutes() - lead);
     return dt;
   }
   function scheduleEventReminder(ev){
@@ -2136,11 +2219,14 @@
     if(!plugin || !state.settings.notifCalendar || !ev || ev.done) return;
     var when = eventReminderDate(ev);
     if(!when || when.getTime() <= Date.now()) return; // don't schedule a reminder already in the past
+    var lead = clamp(Math.round(Number(state.settings.eventReminderMinutes)) || 30, 1, 1440);
+    var template = (state.settings.notifWording && state.settings.notifWording.eventReminder) || "{title} — in {minutes} minutes";
+    var body = template.replace(/\{title\}/g, ev.title).replace(/\{minutes\}/g, String(lead));
     ensureNotifPermission().then(function(granted){
       if(!granted) return;
       plugin.schedule({ notifications:[{
         id: eventNotifId(ev.id), title: (ev.category==="event" ? "Upcoming event" : "Upcoming task"),
-        body: ev.title + " — in 30 minutes", schedule:{ at: when }
+        body: body, schedule:{ at: when }
       }]}).catch(function(){});
     });
   }
@@ -2490,6 +2576,129 @@
       execute: function(){
         return state.calendar.timetable.map(function(d){ return { weekday:d.weekday, blocks:d.blocks.map(function(b){ return {title:b.title, start:b.start, end:b.end, location:b.location}; }) }; });
       }
+    },
+
+    /* ----- Personalization tools: reshape THIS user's own copy of the app — cosmetic/config
+       only, never source code — so every install can end up looking and feeling like nobody
+       else's. ----- */
+    {
+      name:"set_theme", description:"Change the app's accent color theme for this user. Pick one of the preset names, or supply a custom 6-digit hex color for exact control (overrides preset if both given).",
+      inputSchema:{ type:"object", properties:{
+        preset:{type:"string", enum:Object.keys(THEME_PRESETS)},
+        accent_hex:{type:"string", description:"e.g. \"#5cd9a0\" — a custom accent color, used instead of preset if provided"}
+      } },
+      execute: function(input){
+        var hexRe = /^#?[0-9a-fA-F]{6}$/;
+        var theme, name;
+        if(input.accent_hex && hexRe.test(input.accent_hex)){
+          var hex = input.accent_hex.charAt(0)==="#" ? input.accent_hex : "#"+input.accent_hex;
+          theme = { accent: hex, accentDim: shadeHex(hex, -0.28) };
+          name = "custom";
+        } else if(input.preset && THEME_PRESETS[input.preset]){
+          theme = THEME_PRESETS[input.preset];
+          name = input.preset;
+        } else {
+          throw new Error("Provide a valid preset (" + Object.keys(THEME_PRESETS).join(", ") + ") or a 6-digit accent_hex.");
+        }
+        state.settings.theme = { name:name, accent:theme.accent, accentDim:theme.accentDim };
+        applyTheme(); render(); persist();
+        return "Theme set to " + name + " (" + state.settings.theme.accent + ").";
+      }
+    },
+    {
+      name:"rename_stat", description:"Rename an existing stat and/or change its icon (works on default stats too, not just custom ones). Call list_stats first for the exact statId.",
+      inputSchema:{ type:"object", properties:{ statId:{type:"string"}, name:{type:"string"}, icon:{type:"string"} }, required:["statId"] },
+      execute: function(input){
+        var stat = toolFindStat(input.statId);
+        if(input.name) stat.name = String(input.name).trim().slice(0,30) || stat.name;
+        if(input.icon) stat.icon = String(input.icon).trim().slice(0,8) || stat.icon;
+        render(); persist();
+        return "Stat renamed to \"" + stat.name + "\" " + stat.icon + ".";
+      }
+    },
+    {
+      name:"delete_stat", description:"Permanently delete a stat and remove it from any quest rewards. Call list_stats first for the exact statId.",
+      inputSchema:{ type:"object", properties:{ statId:{type:"string"} }, required:["statId"] },
+      execute: function(input){
+        var stat = toolFindStat(input.statId);
+        deleteStat(stat.id);
+        return "Deleted stat \"" + stat.name + "\".";
+      }
+    },
+    {
+      name:"list_rank_titles", description:"List the 20 level-rank titles shown as the user levels up (default: Novice, Initiate, ... Transcendent, Sovereign), in order from lowest level to highest, and how many set_rank_titles needs.",
+      execute: function(){ return { count: TITLES.length, current: currentTitles() }; }
+    },
+    {
+      name:"set_rank_titles", description:"Replace all 20 level-rank titles with a custom set matching a theme the user wants (e.g. sci-fi ranks, martial-arts belts, military grades). Must provide exactly 20, in order from lowest level to highest. Call list_rank_titles first to see the current list.",
+      inputSchema:{ type:"object", properties:{ titles:{ type:"array", items:{type:"string"}, minItems:20, maxItems:20 } }, required:["titles"] },
+      execute: function(input){
+        var titles = Array.isArray(input.titles) ? input.titles.map(function(t){ return String(t||"").trim().slice(0,24) || "Rank"; }) : [];
+        if(titles.length !== TITLES.length) throw new Error("Provide exactly " + TITLES.length + " titles, lowest level first.");
+        state.settings.rankTitles = titles;
+        render(); persist();
+        return "Rank titles updated.";
+      }
+    },
+    {
+      name:"reset_rank_titles", description:"Reset the level-rank titles back to the app's defaults.",
+      execute: function(){ state.settings.rankTitles = null; render(); persist(); return "Rank titles reset to default."; }
+    },
+    {
+      name:"set_coach_tone", description:"Change the personality/tone you (the AI assistant) use when chatting with this user going forward — e.g. \"blunt drill sergeant\", \"gentle and encouraging\", \"sarcastic gym bro\". Pass an empty string to reset to the default neutral tone.",
+      inputSchema:{ type:"object", properties:{ tone:{type:"string"} }, required:["tone"] },
+      execute: function(input){
+        state.settings.coachTone = String(input.tone||"").trim().slice(0,200);
+        render(); persist();
+        return state.settings.coachTone ? ("Coach tone set to: " + state.settings.coachTone) : "Coach tone reset to default.";
+      }
+    },
+    {
+      name:"set_xp_pace", description:"Change how fast leveling feels for this user: \"casual\" (faster), \"normal\" (default), or \"grindy\" (slower, more of a long-term climb). Applies to every stat immediately.",
+      inputSchema:{ type:"object", properties:{ pace:{type:"string", enum:["casual","normal","grindy"]} }, required:["pace"] },
+      execute: function(input){
+        if(Object.keys(XP_PACE_MULT).indexOf(input.pace)===-1) throw new Error("pace must be one of: " + Object.keys(XP_PACE_MULT).join(", "));
+        state.settings.xpPace = input.pace;
+        render(); persist();
+        return "XP pacing set to " + input.pace + ".";
+      }
+    },
+    {
+      name:"set_meal_times", description:"Change what time the three daily meal reminders fire. Only pass the ones to change (24-hour HH:MM); others keep their current time.",
+      inputSchema:{ type:"object", properties:{ breakfast:{type:"string"}, lunch:{type:"string"}, dinner:{type:"string"} } },
+      execute: function(input){
+        var mt = state.settings.mealTimes;
+        ["breakfast","lunch","dinner"].forEach(function(k){
+          if(input[k] && /^\d{1,2}:\d{2}$/.test(input[k])) mt[k] = input[k];
+        });
+        render(); persist();
+        if(state.settings.notifMeals) scheduleMealNotifications();
+        return "Meal reminder times: " + JSON.stringify(mt);
+      }
+    },
+    {
+      name:"set_event_reminder_lead", description:"Change how many minutes before a calendar event the reminder notification fires (default 30).",
+      inputSchema:{ type:"object", properties:{ minutes:{type:"number"} }, required:["minutes"] },
+      execute: function(input){
+        var mins = clamp(Math.round(Number(input.minutes))||30, 1, 1440);
+        state.settings.eventReminderMinutes = mins;
+        render(); persist();
+        if(state.settings.notifCalendar) rescheduleAllEventReminders();
+        return "Event reminders now fire " + mins + " minute(s) before.";
+      }
+    },
+    {
+      name:"set_notification_wording", description:"Customize the text shown in meal and calendar-event reminder notifications. Only pass the ones to change. For eventReminder, use {title} and {minutes} as placeholders.",
+      inputSchema:{ type:"object", properties:{ breakfast:{type:"string"}, lunch:{type:"string"}, dinner:{type:"string"}, eventReminder:{type:"string"} } },
+      execute: function(input){
+        var nw = state.settings.notifWording;
+        ["breakfast","lunch","dinner","eventReminder"].forEach(function(k){
+          if(input[k]) nw[k] = String(input[k]).trim().slice(0,120);
+        });
+        persist();
+        if(state.settings.notifMeals) scheduleMealNotifications();
+        return "Notification wording updated.";
+      }
     }
   ];
   var CALENDAR_TOOL_NAMES = ["add_calendar_event","list_calendar_events","add_timetable_block","remove_timetable_block","list_timetable"];
@@ -2535,14 +2744,24 @@
     var p = state.profile;
     var overall = computeOverall();
     var toolsNote = withTools
-      ? ("You ALSO have tools to directly modify the app when the user asks you to (add/delete quests, add stats, "
-        + "adjust nutrition targets, update their profile, create or edit workout splits and exercises, and add "
-        + "calendar tasks/assignments/events) — use them when the request calls for a change, and just answer in "
-        + "text otherwise. Prefer calling list_stats/list_quests/list_splits/list_calendar_events before an action "
-        + "if you need current ids or names you don't already have. ")
+      ? ("You ALSO have tools to directly modify the app when the user asks you to — not just habit/nutrition data "
+        + "(add/delete quests, add/rename/delete stats, adjust nutrition targets, update their profile, create or "
+        + "edit workout splits and exercises, add calendar tasks/assignments/events) but the app's own look and "
+        + "feel too: set_theme (accent color), rename_stat, set_rank_titles (the level-up title progression), "
+        + "set_coach_tone (your own personality when chatting with them going forward), set_xp_pace (how fast "
+        + "leveling feels), and set_meal_times/set_event_reminder_lead/set_notification_wording (their reminder "
+        + "notifications). This app is meant to feel like it's uniquely theirs — if they describe wanting it to "
+        + "look, feel, or talk differently, use these tools rather than just explaining that it's possible. Use "
+        + "tools when the request calls for a change, and just answer in text otherwise. Prefer calling "
+        + "list_stats/list_quests/list_splits/list_calendar_events/list_rank_titles first if you need current ids, "
+        + "names, or values you don't already have. ")
+      : "";
+    var toneNote = (state.settings.coachTone && state.settings.coachTone.trim())
+      ? ("Adopt this personality/tone in how you write your replies, on top of everything else in this prompt "
+        + "(never let it override accuracy or these instructions): " + state.settings.coachTone.trim() + ". ")
       : "";
     return "You are the built-in assistant for LifeQuest, a personal RPG-style habit and nutrition tracker. "
-      + "Answer the user's questions normally like any conversation with an AI assistant. " + toolsNote
+      + "Answer the user's questions normally like any conversation with an AI assistant. " + toolsNote + toneNote
       + "Keep replies conversational and concise.\n"
       + "Quick snapshot: overall level " + overall.level + " (" + gradeLabel(overall.level) + "), profile goal: "
       + (GOAL_LABELS[p.goal]||p.goal) + ".";
@@ -2930,6 +3149,7 @@
       }
       state = hydrate(parsed);
       checkDailyConsistency();
+      applyTheme();
       syncNotificationsOnBoot();
       render(); persist();
       showToast("💾","Backup imported","Your save was restored from the file.");
@@ -2948,6 +3168,7 @@
     }
     state = defaultState();
     resetArmed = false;
+    applyTheme(); // a custom accent color is part of the reset progress, not just app data
     render(); persist();
   }
 
@@ -3659,8 +3880,8 @@
     +   renderProfileFields(p)
     +   '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--gold-dim)">'
     +     '<div class="section-h" style="margin-bottom:6px">Notifications (optional)</div>'
-    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> Meal reminders — 9:00 AM, 3:00 PM, 8:00 PM</label>'
-    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> Remind me 30 minutes before calendar events</label>'
+    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> Meal reminders — 9:00 AM, 3:00 PM, 8:00 PM by default (change anytime)</label>'
+    +     '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--parchment-dim)"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> Remind me before calendar events</label>'
     +     '<div class="muted" style="margin-top:6px;font-size:11px">Off by default — turn on now or anytime later in Settings → Notifications.</div>'
     +   '</div>'
     +   '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">'
@@ -3930,6 +4151,27 @@
     +   '<button class="btn-secondary" id="addStatBtn" style="margin-top:10px">+ Add Stat</button>'
     + '</div>'
     + '<div class="panel">'
+    +   '<div class="section-h">Customize</div>'
+    +   '<div class="muted" style="margin-bottom:10px">Make it yours — or just ask the AI chat to do any of this for you in plain English (\"make my theme emerald\", \"rename Discipline to Willpower\", \"talk to me like a drill sergeant\").</div>'
+    +   '<div class="field-label" style="margin-bottom:6px">Theme</div>'
+    +   '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+    +     Object.keys(THEME_PRESETS).map(function(key){
+          var t = THEME_PRESETS[key];
+          var active = state.settings.theme && state.settings.theme.name===key;
+          return '<button type="button" class="theme-swatch-btn" data-theme-preset="'+key+'" title="'+key+'" '
+            + 'style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:'+t.accent+';'
+            + 'border:2px solid '+(active?'var(--parchment)':'transparent')+';box-shadow:0 0 0 1px var(--border)"></button>';
+        }).join("")
+    +   '</div>'
+    +   '<div class="form-grid">'
+    +     '<div class="form-row"><span class="field-label">XP pace</span><select class="text-input" id="xpPaceSelect">'
+    +       Object.keys(XP_PACE_LABELS).map(function(k){ return '<option value="'+k+'"'+(state.settings.xpPace===k?' selected':'')+'>'+XP_PACE_LABELS[k]+'</option>'; }).join("")
+    +     '</select></div>'
+    +   '</div>'
+    +   '<div class="form-row" style="margin-top:10px"><span class="field-label">AI coach tone</span><input class="text-input" id="coachToneInput" placeholder="e.g. blunt drill sergeant — leave blank for default" value="'+escapeHtml(state.settings.coachTone||"")+'" maxlength="200"></div>'
+    +   '<button class="btn-secondary" id="saveCustomizeBtn" style="margin-top:12px">Save Customization</button>'
+    + '</div>'
+    + '<div class="panel">'
     +   '<div class="section-h">Nutrition Targets</div>'
     +   '<div class="form-grid">'
     +     '<div class="form-row"><span class="field-label">Calories / day</span><input class="text-input" id="targetCal" type="number" value="'+state.settings.calorieTarget+'" min="500" max="8000"></div>'
@@ -3944,9 +4186,16 @@
     + '</div>'
     + '<div class="panel">'
     +   '<div class="section-h">Notifications</div>'
-    +   '<div class="muted" style="margin-bottom:10px">All off by default — nothing is scheduled unless you turn it on here.</div>'
-    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> <span>Meal reminders — 9:00 AM Breakfast, 3:00 PM Lunch, 8:00 PM Dinner</span></label>'
-    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> <span>Remind me 30 minutes before each calendar event</span></label>'
+    +   '<div class="muted" style="margin-bottom:10px">All off by default — nothing is scheduled unless you turn it on here. Times and wording are yours to change, by hand below or just by asking the AI chat.</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" data-notif-key="notifMeals" '+(state.settings.notifMeals?'checked':'')+'> <span>Meal reminders</span></label>'
+    +   '<div class="form-grid" style="margin-top:8px;margin-left:26px;max-width:420px">'
+    +     '<div class="form-row"><span class="field-label">Breakfast</span><input class="text-input" type="time" id="mealTimeBreakfast" value="'+escapeHtml(state.settings.mealTimes.breakfast)+'"></div>'
+    +     '<div class="form-row"><span class="field-label">Lunch</span><input class="text-input" type="time" id="mealTimeLunch" value="'+escapeHtml(state.settings.mealTimes.lunch)+'"></div>'
+    +   '</div>'
+    +   '<div class="form-row" style="margin-top:8px;margin-left:26px;max-width:200px"><span class="field-label">Dinner</span><input class="text-input" type="time" id="mealTimeDinner" value="'+escapeHtml(state.settings.mealTimes.dinner)+'"></div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:16px"><input type="checkbox" data-notif-key="notifCalendar" '+(state.settings.notifCalendar?'checked':'')+'> <span>Remind me before each calendar event</span></label>'
+    +   '<div class="form-row" style="margin-top:8px;margin-left:26px;max-width:200px"><span class="field-label">Minutes before</span><input class="text-input" type="number" id="eventLeadInput" min="1" max="1440" value="'+state.settings.eventReminderMinutes+'"></div>'
+    +   '<button class="btn-secondary" id="saveNotifTimesBtn" style="margin-top:14px">Save Times</button>'
     +   '<div class="muted" style="margin-top:10px;font-size:11px">Your device will ask to allow notifications the first time one of these is turned on.</div>'
     + '</div>'
     + '<div class="panel">'
@@ -4451,6 +4700,41 @@
       addCustomStat(name, icon);
     });
 
+    // Theme swatches apply instantly, like the notification toggles — no separate save step.
+    Array.prototype.forEach.call(document.querySelectorAll("[data-theme-preset]"), function(btn){
+      btn.addEventListener("click", function(){
+        var key = btn.getAttribute("data-theme-preset");
+        var preset = THEME_PRESETS[key];
+        if(!preset) return;
+        state.settings.theme = { name:key, accent:preset.accent, accentDim:preset.accentDim };
+        applyTheme(); render(); persist();
+      });
+    });
+    var saveCustomizeBtn = document.getElementById("saveCustomizeBtn");
+    if(saveCustomizeBtn) saveCustomizeBtn.addEventListener("click", function(){
+      var paceEl = document.getElementById("xpPaceSelect");
+      var toneEl = document.getElementById("coachToneInput");
+      if(paceEl && XP_PACE_MULT[paceEl.value]) state.settings.xpPace = paceEl.value;
+      if(toneEl) state.settings.coachTone = toneEl.value.trim().slice(0,200);
+      render(); persist();
+      showToast("🎨","Customization saved","Your XP pace and coach tone are updated.");
+    });
+
+    var saveNotifTimesBtn = document.getElementById("saveNotifTimesBtn");
+    if(saveNotifTimesBtn) saveNotifTimesBtn.addEventListener("click", function(){
+      var b = document.getElementById("mealTimeBreakfast"), l = document.getElementById("mealTimeLunch"), d = document.getElementById("mealTimeDinner");
+      var leadEl = document.getElementById("eventLeadInput");
+      var timeRe = /^\d{1,2}:\d{2}$/;
+      if(b && timeRe.test(b.value)) state.settings.mealTimes.breakfast = b.value;
+      if(l && timeRe.test(l.value)) state.settings.mealTimes.lunch = l.value;
+      if(d && timeRe.test(d.value)) state.settings.mealTimes.dinner = d.value;
+      if(leadEl && leadEl.value) state.settings.eventReminderMinutes = clamp(Math.round(Number(leadEl.value))||30, 1, 1440);
+      render(); persist();
+      if(state.settings.notifMeals) scheduleMealNotifications();
+      if(state.settings.notifCalendar) rescheduleAllEventReminders();
+      showToast("🔔","Notification times saved","Your reminder schedule is updated.");
+    });
+
     var exportBtn = document.getElementById("exportBtn");
     if(exportBtn) exportBtn.addEventListener("click", function(){ doExport(); });
 
@@ -4503,6 +4787,7 @@
     }
     state = hydrate(safeState);
     checkDailyConsistency();
+    applyTheme();
     syncNotificationsOnBoot();
     var elapsed = Date.now() - BOOT_STARTED_AT;
     var wait = Math.max(0, SPLASH_MIN_MS - elapsed);
