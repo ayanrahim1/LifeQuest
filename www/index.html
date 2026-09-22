@@ -205,7 +205,7 @@
   .macro-split-pct{font-size:10.5px;margin-top:4px;font-family:var(--font-mono);}
   .trend-chart-wrap{display:flex;justify-content:center;margin-bottom:8px;}
   .trend-chart-wrap svg{max-width:100%;}
-  .food-input-row{display:flex;gap:8px;flex-wrap:wrap;}
+  .food-input-row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;}
   .food-input-row .text-input{flex:1;min-width:180px;}
   .food-result{margin-top:12px;background:var(--panel-2);border:1px solid var(--border);border-left:3px solid var(--gold);padding:10px 12px;font-size:12.5px;}
   .food-result-head{display:flex;justify-content:space-between;gap:8px;font-weight:700;font-size:13px;flex-wrap:wrap;}
@@ -492,11 +492,23 @@
   // platform runtime does internally; outside Claude nothing does it for you, so it has to happen
   // here or "add to my calendar" never actually touches app state no matter how convincingly the
   // model claims it did.
-  function runToolLoop(messages, tools, model, signal, roundsLeft){
+  // toolRoundsLeft caps how many ROUNDS get the full tool-schema payload attached (a single round
+  // can still contain several tool_calls at once — most one-shot requests like "set my theme and
+  // rename this stat" resolve in exactly one round regardless of this cap). Once it hits 0 we stop
+  // attaching `tools` to the request entirely: the model then can't return more tool_calls (Groq,
+  // like OpenAI, only ever returns tool_calls when a tools array was offered on that request), so
+  // it's forced to wrap up with a plain-text reply instead. This exists purely to bound token cost
+  // — every round otherwise re-sends the entire ~29-tool schema list plus the growing message
+  // history, and Groq's free tier caps at 8,000 tokens/minute, which a handful of back-to-back
+  // multi-round tool exchanges can blow through even from light, everyday use.
+  function runToolLoop(messages, tools, model, signal, roundsLeft, toolRoundsLeft){
     roundsLeft = roundsLeft == null ? 6 : roundsLeft;
+    toolRoundsLeft = toolRoundsLeft == null ? 3 : toolRoundsLeft;
     if(roundsLeft <= 0){ return Promise.reject({ code:"refused", message:"Too many tool calls in a row." }); }
-    var toolDecls = toOpenAIToolDecls(tools);
-    return postJSON("/generate", { model: model, messages: messages, tools: toolDecls }, signal).then(function(r){
+    var sendTools = toolRoundsLeft > 0;
+    var payload = { model: model, messages: messages };
+    if(sendTools) payload.tools = toOpenAIToolDecls(tools);
+    return postJSON("/generate", payload, signal).then(function(r){
       if(r.status === 429) return Promise.reject({ code:"rate_limited" });
       if(!r.ok) return Promise.reject({ code:"refused" });
       return r.json();
@@ -519,7 +531,7 @@
       var nextMessages = messages.concat([
         { role:"assistant", content: data.text || null, tool_calls: calls }
       ]).concat(toolResultMessages);
-      return runToolLoop(nextMessages, tools, model, signal, roundsLeft - 1);
+      return runToolLoop(nextMessages, tools, model, signal, roundsLeft - 1, toolRoundsLeft - 1);
     });
   }
 
@@ -655,7 +667,7 @@
   /* ===================== CONFIG ===================== */
   // Bump this on every real update you ship — shown at the bottom of Settings so you can tell
   // at a glance which build is actually installed on a device.
-  var APP_VERSION = "1.1.0";
+  var APP_VERSION = "1.1.2";
   // The splash screen (the static markup in <div id="app"> at the top of the page) should read
   // as a deliberate beat, not a flash — so the very first render is held back until at least this
   // much time has passed since boot started, even if the save actually loaded faster than that.
@@ -2743,18 +2755,14 @@
   function chatContextPrefix(withTools){
     var p = state.profile;
     var overall = computeOverall();
+    // Kept deliberately short: the tool schemas sent alongside this prompt already name and
+    // describe every tool, so re-enumerating them here in prose would just pay the same token
+    // cost twice on every request (see runToolLoop's comment on the 8,000-tokens/minute cap).
     var toolsNote = withTools
-      ? ("You ALSO have tools to directly modify the app when the user asks you to — not just habit/nutrition data "
-        + "(add/delete quests, add/rename/delete stats, adjust nutrition targets, update their profile, create or "
-        + "edit workout splits and exercises, add calendar tasks/assignments/events) but the app's own look and "
-        + "feel too: set_theme (accent color), rename_stat, set_rank_titles (the level-up title progression), "
-        + "set_coach_tone (your own personality when chatting with them going forward), set_xp_pace (how fast "
-        + "leveling feels), and set_meal_times/set_event_reminder_lead/set_notification_wording (their reminder "
-        + "notifications). This app is meant to feel like it's uniquely theirs — if they describe wanting it to "
-        + "look, feel, or talk differently, use these tools rather than just explaining that it's possible. Use "
-        + "tools when the request calls for a change, and just answer in text otherwise. Prefer calling "
-        + "list_stats/list_quests/list_splits/list_calendar_events/list_rank_titles first if you need current ids, "
-        + "names, or values you don't already have. ")
+      ? ("You also have tools to modify the app directly when asked — not just habit/nutrition data, but the "
+        + "app's own look, feel, and pacing too. This app is meant to feel uniquely theirs: use a tool when the "
+        + "request calls for a change rather than just describing what's possible, and call a list_* tool first "
+        + "if you need current ids or values you don't already have. ")
       : "";
     var toneNote = (state.settings.coachTone && state.settings.coachTone.trim())
       ? ("Adopt this personality/tone in how you write your replies, on top of everything else in this prompt "
@@ -2839,6 +2847,13 @@
   function renderChatLogOnly(){
     var el = document.getElementById("chatLog");
     if(el){ el.innerHTML = chatLogHtml(); el.scrollTop = el.scrollHeight; }
+  }
+  // Jumps the chat log to its latest message. Called right after switching into the Chat tab (by
+  // tab button or swipe) so opening it always lands on the most recent messages instead of
+  // whatever scroll position — usually the very top — a freshly-rendered panel starts at.
+  function scrollChatLogToBottom(){
+    var el = document.getElementById("chatLog");
+    if(el) el.scrollTop = el.scrollHeight;
   }
 
   /* ----- Calendar chat (scoped admin chat, lives in the Calendar tab) ----- */
@@ -3808,7 +3823,7 @@
     + '<div class="panel">'
     +   '<div class="section-h">Log Food</div>'
     +   '<div class="food-input-row">'
-    +     '<input class="text-input" id="foodInput" placeholder="e.g. Grilled chicken, rice, and broccoli" maxlength="200" '+(foodAnalyzing?'disabled':'')+'>'
+    +     '<textarea class="text-input chat-textarea" id="foodInput" rows="1" placeholder="e.g. Grilled chicken, rice, and broccoli" maxlength="200" '+(foodAnalyzing?'disabled':'')+'></textarea>'
     +     '<button class="btn-primary" id="foodSubmit" '+((foodAnalyzing||!sampleCap)?'disabled':'')+'>'+(foodAnalyzing?'Analyzing…':'Analyze & Log')+'</button>'
     +   '</div>'
     +   photoSection
@@ -3926,7 +3941,7 @@
       + '<div class="section-h">What Do You Have?</div>'
       + '<div class="muted">'+(imagesOk ? 'Type a grocery list, or attach a photo — AI pulls out the ingredients so recipes can use what you\'ve got.' : 'Type a grocery list — AI pulls out the ingredients so recipes can use what you\'ve got. (Photos aren\'t supported in this view.)')+'</div>'
       + '<div class="food-input-row" style="margin-top:10px">'
-      +   '<input class="text-input" id="groceryInput" placeholder="e.g. chicken, rice, spinach, eggs" maxlength="300" '+(groceryScanLoading?'disabled':'')+'>'
+      +   '<textarea class="text-input chat-textarea" id="groceryInput" rows="1" placeholder="e.g. chicken, rice, spinach, eggs" maxlength="300" '+(groceryScanLoading?'disabled':'')+'></textarea>'
       +   '<button class="btn-primary" id="groceryScanBtn" '+(groceryScanLoading?'disabled':'')+'>'+(groceryScanLoading?'Scanning…':'Scan & Add')+'</button>'
       + '</div>'
       + groceryPhotoSection
@@ -3942,7 +3957,7 @@
     } else {
       var hasIngredients = state.recipeIngredients.length>0;
       body = '<div class="food-input-row">'
-        +   '<input class="text-input" id="recipeInput" placeholder="e.g. high protein chicken dinner, 30 minutes" maxlength="200" '+(recipeGenerating?'disabled':'')+'>'
+        +   '<textarea class="text-input chat-textarea" id="recipeInput" rows="1" placeholder="e.g. high protein chicken dinner, 30 minutes" maxlength="200" '+(recipeGenerating?'disabled':'')+'></textarea>'
         +   '<button class="btn-primary" id="recipeGenBtn" '+(recipeGenerating?'disabled':'')+'>'+(recipeGenerating?'Generating…':'Generate Recipe')+'</button>'
         + '</div>'
         + (hasIngredients
@@ -4368,6 +4383,7 @@
         lastRenderedViewKey = currentViewKey(); // the drag itself already animated the change
       }
       render();
+      if(complete && toTab==="chat") scrollChatLogToBottom();
     }, 230);
   }
   function initSwipeNav(){
@@ -4420,6 +4436,7 @@
         if(t==="status" && activeTab==="status"){ selectedStatDetail = null; }
         activeTab = t;
         render();
+        if(t==="chat") scrollChatLogToBottom();
       });
     });
     app.querySelectorAll("[data-open-stat]").forEach(function(btn){
@@ -4458,8 +4475,8 @@
     });
     var foodInputEl = document.getElementById("foodInput");
     var foodSubmit = document.getElementById("foodSubmit");
-    if(foodSubmit) foodSubmit.addEventListener("click", function(){ analyzeFood(foodInputEl.value); });
-    if(foodInputEl) foodInputEl.addEventListener("keydown", function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); analyzeFood(foodInputEl.value); } });
+    if(foodSubmit) foodSubmit.addEventListener("click", function(){ var v = foodInputEl.value; foodInputEl.value = ""; autoGrowTextarea(foodInputEl); analyzeFood(v); });
+    bindChatTextarea(foodInputEl, analyzeFood);
 
     var foodPhotoBtn = document.getElementById("foodPhotoBtn");
     if(foodPhotoBtn) foodPhotoBtn.addEventListener("click", function(){ var el=document.getElementById("foodPhotoInput"); if(el) el.click(); });
@@ -4626,8 +4643,8 @@
 
     var recipeInputEl = document.getElementById("recipeInput");
     var recipeGenBtn = document.getElementById("recipeGenBtn");
-    if(recipeGenBtn) recipeGenBtn.addEventListener("click", function(){ generateRecipe(recipeInputEl.value); });
-    if(recipeInputEl) recipeInputEl.addEventListener("keydown", function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); generateRecipe(recipeInputEl.value); } });
+    if(recipeGenBtn) recipeGenBtn.addEventListener("click", function(){ var v = recipeInputEl.value; recipeInputEl.value = ""; autoGrowTextarea(recipeInputEl); generateRecipe(v); });
+    bindChatTextarea(recipeInputEl, generateRecipe);
     var saveRecipeBtn = document.getElementById("saveRecipeBtn");
     if(saveRecipeBtn) saveRecipeBtn.addEventListener("click", function(){ saveRecipe(); });
     var discardRecipeBtn = document.getElementById("discardRecipeBtn");
@@ -4658,8 +4675,8 @@
 
     var groceryInputEl = document.getElementById("groceryInput");
     var groceryScanBtn = document.getElementById("groceryScanBtn");
-    if(groceryScanBtn) groceryScanBtn.addEventListener("click", function(){ scanGroceries(groceryInputEl.value); });
-    if(groceryInputEl) groceryInputEl.addEventListener("keydown", function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); scanGroceries(groceryInputEl.value); } });
+    if(groceryScanBtn) groceryScanBtn.addEventListener("click", function(){ var v = groceryInputEl.value; groceryInputEl.value = ""; autoGrowTextarea(groceryInputEl); scanGroceries(v); });
+    bindChatTextarea(groceryInputEl, scanGroceries);
     var groceryPhotoBtn = document.getElementById("groceryPhotoBtn");
     if(groceryPhotoBtn) groceryPhotoBtn.addEventListener("click", function(){ var el=document.getElementById("groceryPhotoInput"); if(el) el.click(); });
     var groceryPhotoInput = document.getElementById("groceryPhotoInput");
