@@ -395,10 +395,14 @@
 /* =====================================================================
    REPLACEMENT for the Claude Artifact runtime (window.claude).
    This makes the app's AI / save / export features work outside
-   Claude, using a free Groq API key via your own Cloudflare Worker.
-   Groq's API is OpenAI-compatible, so everything below speaks the
-   OpenAI chat-completions shape (messages / tools / tool_calls) —
-   NOT Gemini's functionDeclarations/functionCall shape this used to use.
+   Claude, using a free Gemini API key via your own Cloudflare Worker
+   (previously Groq — switched over because Groq's flat 8,000
+   tokens/minute free-tier cap kept getting hit by this app's
+   tool-heavy chat; Gemini's free tier is far more generous there).
+   Calls go through Gemini's OpenAI-compatibility endpoint, so
+   everything below still speaks the OpenAI chat-completions shape
+   (messages / tools / tool_calls) — NOT Gemini's native
+   functionDeclarations/functionCall shape this used even earlier.
 
    >>> SET THIS to your deployed Worker's URL before hosting <<<
    ===================================================================== */
@@ -407,20 +411,24 @@
 
   var WORKER_URL = "https://lifequest.ayanrahimsocial.workers.dev"; // <-- your deployed Worker
 
-  // Groq model IDs. Only VISION_MODEL ("complex") can actually see images — the other two are
-  // text-only and will error on an image_url content part, so attachImages() below always routes
-  // image calls to it regardless of which tier the caller asked for.
+  // Gemini model IDs, called through the Worker's Gemini OpenAI-compatibility proxy (see
+  // worker.js). Switched from Groq because Groq's free tier caps at a flat 8,000 tokens/minute
+  // across every model, which this app's tool-calling chat kept running into; Gemini's free tier
+  // is far more generous on that specific limit. "flash-lite" is the small/cheap/fast tier —
+  // matches what this app actually needs (basic assistant work, not deep reasoning) — while
+  // VISION_MODEL uses the fuller "flash" model for better accuracy reading food photos. Unlike
+  // Groq's text-only tiers, Gemini's Flash-Lite models are natively multimodal too, so this
+  // split is about accuracy, not a hard capability requirement.
   //
-  // Groq retires models with little notice, and their own docs pages have proven to lag behind
-  // what's actually live (qwen/qwen3.6-27b returned model_not_found while /docs/vision still
-  // listed it as active) — so /docs/models and /docs/deprecations are a starting point, not
-  // proof. If AI features fail again with "model_not_found"/404 in the Worker's logs, the
-  // reliable check is console.groq.com → Playground → the model picker dropdown, which reflects
-  // what your account can actually call right now.
+  // Gemini renames/retires models about as often as Groq did, and docs pages lag behind what's
+  // actually live (the exact lesson learned with Groq's qwen/qwen3.6-27b going model_not_found
+  // while its own docs still listed it) — so treat these IDs as a starting point, not proof. If
+  // AI features fail with "model_not_found" or a 404 in the Worker's logs, check the live model
+  // list at aistudio.google.com or ai.google.dev/gemini-api/docs/models and update these to match.
   var MODEL_MAP = {
-    quick: "openai/gpt-oss-20b",
-    default: "openai/gpt-oss-120b",
-    complex: "qwen/qwen3.8-27b"
+    quick: "gemini-3.5-flash-lite",
+    default: "gemini-3.5-flash-lite",
+    complex: "gemini-3.8-flash"
   };
   var VISION_MODEL = MODEL_MAP.complex;
 
@@ -443,9 +451,9 @@
     });
   }
 
-  // Groq/OpenAI vision format wants the last user message's `content` turned into an array of
-  // parts — [{type:"text", text:...}, {type:"image_url", image_url:{url:"data:..."}}] — instead
-  // of a plain string.
+  // The OpenAI vision format Gemini's compatibility layer speaks wants the last user message's
+  // `content` turned into an array of parts — [{type:"text", text:...}, {type:"image_url",
+  // image_url:{url:"data:..."}}] — instead of a plain string.
   function attachImages(messages, images){
     if(!images) return Promise.resolve(messages);
     var files = Array.isArray(images) ? images : [images];
@@ -470,7 +478,8 @@
   }
 
   // Converts the app's tool objects ({name, description, inputSchema, execute}) into OpenAI's
-  // tools shape, which Groq speaks natively: {type:"function", function:{name, description, parameters}}.
+  // tools shape, which Gemini's compatibility layer speaks natively: {type:"function",
+  // function:{name, description, parameters}}.
   function toOpenAIToolDecls(tools){
     return tools.map(function(t){
       return {
@@ -484,7 +493,7 @@
     });
   }
 
-  // Runs the actual tool-calling round trip against Groq's OpenAI-compatible API: send
+  // Runs the actual tool-calling round trip against Gemini's OpenAI-compatible API: send
   // messages+tools to /generate, and if the reply contains tool_calls, run each matching local
   // tool's execute() (the same function the platform's own sample() would have called), feed its
   // result(s) back as "tool" role messages (matched by tool_call_id), and ask again — repeating
@@ -495,12 +504,21 @@
   // toolRoundsLeft caps how many ROUNDS get the full tool-schema payload attached (a single round
   // can still contain several tool_calls at once — most one-shot requests like "set my theme and
   // rename this stat" resolve in exactly one round regardless of this cap). Once it hits 0 we stop
-  // attaching `tools` to the request entirely: the model then can't return more tool_calls (Groq,
+  // attaching `tools` to the request entirely: the model then can't return more tool_calls (Gemini,
   // like OpenAI, only ever returns tool_calls when a tools array was offered on that request), so
-  // it's forced to wrap up with a plain-text reply instead. This exists purely to bound token cost
-  // — every round otherwise re-sends the entire ~29-tool schema list plus the growing message
-  // history, and Groq's free tier caps at 8,000 tokens/minute, which a handful of back-to-back
-  // multi-round tool exchanges can blow through even from light, everyday use.
+  // it's forced to wrap up with a plain-text reply instead. This exists purely to bound token cost.
+  //
+  // Rate-limit provider caps (like tokens/minute) are a running total across ALL requests in the
+  // sliding window, not a per-request ceiling — this actually bit us for real on Groq's free tier
+  // (flat 8,000 tokens/minute): a captured 429 showed "Used 4815, Requested 5016", i.e. two
+  // requests within the same minute summed past the cap even though neither was huge alone, since
+  // every tool-enabled round re-sends the entire ~29-tool schema (~2,500 tokens on its own). That's
+  // why this used to be capped to 1 round. Restored to 3 now that this app calls Gemini instead —
+  // its free tier is roughly 30-125x more generous on tokens/minute, so a few rounds' worth of
+  // schema resends (even ~10,000 tokens total) is a small fraction of the budget, and getting the
+  // full multi-step chaining back (e.g. "look up X, then rename it" across two dependent rounds)
+  // is worth it. If you ever switch providers again, revisit this number against whatever that
+  // provider's actual tokens/minute limit is.
   function runToolLoop(messages, tools, model, signal, roundsLeft, toolRoundsLeft){
     roundsLeft = roundsLeft == null ? 6 : roundsLeft;
     toolRoundsLeft = toolRoundsLeft == null ? 3 : toolRoundsLeft;
@@ -577,9 +595,8 @@
 
   sampleCapObj.json = function(promptOrTurns, opts){
     opts = opts || {};
-    // A photo forces the vision-capable model regardless of the requested tier — Groq's
-    // non-vision models reject image_url content parts outright, so honoring a "quick"/"default"
-    // request here would turn every food-photo scan into a hard error instead of an answer.
+    // A photo forces the fuller vision-capable model regardless of the requested tier — VISION_MODEL
+    // is chosen for accuracy on food photos, not because the lite tiers can't technically see images.
     var model = opts.images ? VISION_MODEL : (MODEL_MAP[opts.modelTier] || MODEL_MAP.default);
     var messages = toOpenAIMessages(promptOrTurns);
     return attachImages(messages, opts.images).then(function(messages){
@@ -667,7 +684,7 @@
   /* ===================== CONFIG ===================== */
   // Bump this on every real update you ship — shown at the bottom of Settings so you can tell
   // at a glance which build is actually installed on a device.
-  var APP_VERSION = "1.1.4";
+  var APP_VERSION = "1.2.0";
   // The splash screen (the static markup in <div id="app"> at the top of the page) should read
   // as a deliberate beat, not a flash — so the very first render is held back until at least this
   // much time has passed since boot started, even if the save actually loaded faster than that.
@@ -2723,13 +2740,16 @@
   var chatToolsSupported = null; // null = unknown yet, true/false once learned
   var CHAT_HISTORY_CAP = 24;
   // CHAT_HISTORY_CAP is how much conversation stays stored and visible on screen. Every request
-  // to Groq re-sends the whole history back to it (there's no server-side memory), so a
-  // long-running chat plus the ~29-tool schema list can add up to several thousand tokens on a
-  // SINGLE request — confirmed against a real Groq 429 that reported "Used 4815, Requested 5016"
-  // against the free tier's 8,000-tokens/minute cap for one single chat turn. CHAT_CONTEXT_SEND_CAP
-  // trims what actually goes out over the wire to just the most recent exchanges, independent of
-  // how much is kept for display, to keep a normal message safely under that ceiling.
-  var CHAT_CONTEXT_SEND_CAP = 6;
+  // re-sends the whole history back to the model (there's no server-side memory), so a long-running
+  // chat plus the ~29-tool schema list adds up on every SINGLE request — this is what tripped
+  // Groq's flat 8,000-tokens/minute free-tier cap for real ("Used 4815, Requested 5016" on one
+  // chat turn). Now that this app calls Gemini instead (its free tier's tokens/minute budget is
+  // roughly 30-125x more generous), that specific failure mode is far less likely, so this can stay
+  // fairly generous rather than as tight as it had to be under Groq. CHAT_CONTEXT_SEND_CAP trims
+  // what actually goes out over the wire to the most recent exchanges, independent of how much is
+  // kept for display — still worth bounding even on a generous provider, both for token cost and
+  // because older messages usually add little to the model's understanding of the current request.
+  var CHAT_CONTEXT_SEND_CAP = 16;
   function recentTurnsFor(history){
     var msgs = history.slice(0, -1); // drop the empty streaming placeholder for the reply in progress
     if(msgs.length > CHAT_CONTEXT_SEND_CAP){ msgs = msgs.slice(msgs.length - CHAT_CONTEXT_SEND_CAP); }
