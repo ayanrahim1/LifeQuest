@@ -667,7 +667,7 @@
   /* ===================== CONFIG ===================== */
   // Bump this on every real update you ship — shown at the bottom of Settings so you can tell
   // at a glance which build is actually installed on a device.
-  var APP_VERSION = "1.1.2";
+  var APP_VERSION = "1.1.4";
   // The splash screen (the static markup in <div id="app"> at the top of the page) should read
   // as a deliberate beat, not a flash — so the very first render is held back until at least this
   // much time has passed since boot started, even if the save actually loaded faster than that.
@@ -2722,6 +2722,19 @@
   var chatAbort = null;
   var chatToolsSupported = null; // null = unknown yet, true/false once learned
   var CHAT_HISTORY_CAP = 24;
+  // CHAT_HISTORY_CAP is how much conversation stays stored and visible on screen. Every request
+  // to Groq re-sends the whole history back to it (there's no server-side memory), so a
+  // long-running chat plus the ~29-tool schema list can add up to several thousand tokens on a
+  // SINGLE request — confirmed against a real Groq 429 that reported "Used 4815, Requested 5016"
+  // against the free tier's 8,000-tokens/minute cap for one single chat turn. CHAT_CONTEXT_SEND_CAP
+  // trims what actually goes out over the wire to just the most recent exchanges, independent of
+  // how much is kept for display, to keep a normal message safely under that ceiling.
+  var CHAT_CONTEXT_SEND_CAP = 6;
+  function recentTurnsFor(history){
+    var msgs = history.slice(0, -1); // drop the empty streaming placeholder for the reply in progress
+    if(msgs.length > CHAT_CONTEXT_SEND_CAP){ msgs = msgs.slice(msgs.length - CHAT_CONTEXT_SEND_CAP); }
+    return msgs;
+  }
   // Reveals the live assistant reply a few characters at a time instead of snapping straight to
   // whatever text sample()'s onText just handed us — onText itself only fires a few times a
   // second, often with a whole sentence at once, which reads as teleporting rather than typing.
@@ -2787,7 +2800,7 @@
   }
 
   function performChatCall(withTools){
-    var turns = [{role:"user", content:chatContextPrefix(withTools)}].concat(state.chat.history.slice(0,-1));
+    var turns = [{role:"user", content:chatContextPrefix(withTools)}].concat(recentTurnsFor(state.chat.history));
     chatAbort = new AbortController();
     var opts = {
       modelTier:"default",
@@ -2851,9 +2864,27 @@
   // Jumps the chat log to its latest message. Called right after switching into the Chat tab (by
   // tab button or swipe) so opening it always lands on the most recent messages instead of
   // whatever scroll position — usually the very top — a freshly-rendered panel starts at.
+  // Applied three times on purpose: immediately (covers the normal case), on the next animation
+  // frame (covers layout not having fully settled the instant innerHTML was assigned — the same
+  // belt-and-suspenders trick render() already uses for restoring window scroll position), and
+  // once document.fonts.ready resolves (the Cinzel/Manrope web fonts load with font-display:swap,
+  // so they can finish loading just after this panel first paints and reflow the chat text,
+  // shifting scrollHeight out from under an earlier scrollTop — most noticeable the first time
+  // the tab is opened in a session).
   function scrollChatLogToBottom(){
     var el = document.getElementById("chatLog");
-    if(el) el.scrollTop = el.scrollHeight;
+    if(!el) return;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(function(){
+      var el2 = document.getElementById("chatLog");
+      if(el2) el2.scrollTop = el2.scrollHeight;
+    });
+    if(document.fonts && document.fonts.ready){
+      document.fonts.ready.then(function(){
+        var el3 = document.getElementById("chatLog");
+        if(el3) el3.scrollTop = el3.scrollHeight;
+      });
+    }
   }
 
   /* ----- Calendar chat (scoped admin chat, lives in the Calendar tab) ----- */
@@ -2909,7 +2940,7 @@
     performCalendarChatCall(chatToolsSupported !== false);
   }
   function performCalendarChatCall(withTools){
-    var turns = [{role:"user", content:calendarChatContextPrefix(withTools)}].concat(calendarChatHistory.slice(0,-1));
+    var turns = [{role:"user", content:calendarChatContextPrefix(withTools)}].concat(recentTurnsFor(calendarChatHistory));
     calendarChatAbort = new AbortController();
     var opts = {
       modelTier:"default",
